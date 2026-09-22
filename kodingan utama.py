@@ -1,26 +1,130 @@
+import os
+from abc import ABC, abstractmethod
 import streamlit as st
 from PIL import Image
-from src.core.analyzer import ToolAnalyzer
-from src.brands.registry import BRAND_REGISTRY
-import os
+import google.generativeai as genai
 
-# Konfigurasi Halaman
+# ==============================================================================
+# 1. SISTEM BRAND MODULAR (Dapat Ditambah Langsung di Sini)
+# ==============================================================================
+class BaseBrand(ABC):
+    @property
+    @abstractmethod
+    def brand_name(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def official_website(self) -> str:
+        pass
+
+    @abstractmethod
+    def format_search_query(self, extracted_text: str, tool_type: str) -> str:
+        pass
+
+
+class SnapOn(BaseBrand):
+    @property
+    def brand_name(self) -> str:
+        return "Snap-on"
+    
+    @property
+    def official_website(self) -> str:
+        return "shop.snapon.com"
+
+    def format_search_query(self, extracted_text: str, tool_type: str) -> str:
+        return f"site:{self.official_website} {tool_type} {extracted_text} part number"
+
+
+class EgaMaster(BaseBrand):
+    @property
+    def brand_name(self) -> str:
+        return "EGA Master"
+    
+    @property
+    def official_website(self) -> str:
+        return "egamaster.com"
+
+    def format_search_query(self, extracted_text: str, tool_type: str) -> str:
+        return f"site:{self.official_website} {tool_type} {extracted_text} specification"
+
+
+class Tekiro(BaseBrand):
+    @property
+    def brand_name(self) -> str:
+        return "Tekiro"
+    
+    @property
+    def official_website(self) -> str:
+        return "tekiro.com"
+
+    def format_search_query(self, extracted_text: str, tool_type: str) -> str:
+        return f"site:{self.official_website} {tool_type} {extracted_text} kode item"
+
+
+# Pendaftar Brand (Tambahkan class baru ke sini jika ada brand baru)
+BRAND_REGISTRY = {
+    "Snap-on": SnapOn(),
+    "EGA Master": EgaMaster(),
+    "Tekiro": Tekiro(),
+    "FACOM": None,
+    "Stahlwille": None,
+    "Lainnya / Unknown": None
+}
+
+
+# ==============================================================================
+# 2. LOGIKA ANALISIS AI (Vision, OCR, & Cross-Checking)
+# ==============================================================================
+class ToolAnalyzer:
+    def __init__(self, api_key: str):
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel('gemini-1.5-pro-latest')
+
+    def analyze_tool(self, image, brand: str, user_specs: str, web_context: str = "") -> str:
+        prompt = f"""
+        Tugas: Identifikasi Part Number dari Aviation/Industrial tool pada gambar ini.
+        Prioritas Utama: AKURASI > KECEPATAN. Jangan berikan Part Number fiktif.
+        
+        Informasi dari User:
+        - Brand: {brand}
+        - Spesifikasi Tambahan: {user_specs}
+        
+        Konteks Pencarian Web / Brand:
+        {web_context}
+        
+        Lakukan langkah berikut:
+        1. OCR: Baca semua teks, kode, ukuran, atau ukiran yang ada di fisik tool.
+        2. Visual Recognition: Identifikasi tipe tool (misal: Torque Wrench, Ratchet, Pliers) dan fitur uniknya.
+        3. Cross-check: Cocokkan ciri visual dan hasil OCR dengan format penomoran part brand tersebut.
+        4. Confidence Score: Tentukan tingkat kepastian (0-100%). Berikan skor < 50% jika Part Number hanya perkiraan visual tanpa teks terpisah yang jelas.
+        
+        Format Output Jawaban:
+        - **Estimated Part Number:** [Nomor Part / Tidak Yakin]
+        - **Confidence Score:** [0-100%]
+        - **Identified Tool Type:** [Tipe Tool]
+        - **Evidence & Reasoning:** [Detail temuan OCR dan visual]
+        - **Human Verification Needed:** [Ya/Tidak dan catat alasannya]
+        """
+        
+        response = self.model.generate_content([prompt, image])
+        return response.text
+
+
+# ==============================================================================
+# 3. INTERFACE STREAMLIT
+# ==============================================================================
 st.set_page_config(
-    page_title="Aviation Tool PN Finder",
+    page_title="Aviation Tool Part Number Finder",
     page_icon="🔧",
     layout="wide"
 )
 
 st.title("🔧 Aviation Tool Part Number Finder")
-st.markdown("""
-Sistem AI untuk mengidentifikasi *Part Number* alat penerbangan dan industri.  
-**Prinsip: Akurasi di atas Kecepatan. Tidak ada tebakan tanpa bukti.**
-""")
+st.markdown("Sistem AI untuk mengidentifikasi *Part Number* alat penerbangan & industri berdasarkan foto dan spesifikasi.")
 
-# Inisialisasi Core AI
-# Ambil API key dari Environment Variables (Streamlit Secrets)
-api_key = os.getenv("GEMINI_API_KEY", "DUMMY_KEY_UNTUK_TESTING")
-analyzer = ToolAnalyzer(api_key=api_key)
+# Mengambil API Key dari Streamlit Secrets / Environment
+api_key = os.getenv("GEMINI_API_KEY")
 
 col1, col2 = st.columns(2)
 
@@ -32,63 +136,45 @@ with col1:
     if input_method == "Upload File":
         image_file = st.file_uploader("Upload foto tool (JPG/PNG)", type=['jpg', 'jpeg', 'png'])
     else:
-        image_file = st.camera_input("Ambil foto tool secara langsung")
+        image_file = st.camera_input("Ambil foto tool")
 
     if image_file:
         img = Image.open(image_file)
-        st.image(img, caption="Gambar yang diunggah", use_container_width=True)
+        st.image(img, caption="Foto Tool yang Dianalisis", use_container_width=True)
 
 with col2:
     st.header("2. Informasi Tambahan")
-    st.info("Semakin detail informasi yang diberikan, semakin tinggi akurasi AI.")
-    
-    selected_brand = st.selectbox("Brand (Opsional / Jika Diketahui):", list(BRAND_REGISTRY.keys()))
-    tool_type = st.text_input("Tipe Tool (Contoh: Torque Wrench, Obeng, Ratchet):")
-    size_info = st.text_input("Ukuran / Dimensi (Contoh: 1/4 inch drive, 10mm):")
-    additional_desc = st.text_area("Deskripsi Tambahan / Engraving / Teks yang terlihat buram:")
+    selected_brand = st.selectbox("Brand Tool:", list(BRAND_REGISTRY.keys()))
+    tool_type = st.text_input("Tipe Tool (misal: Ratchet, Torque Wrench, Obeng):")
+    size_info = st.text_input("Ukuran (misal: 1/4 inch drive, 10mm):")
+    additional_desc = st.text_area("Deskripsi / Engraving Teks yang Terlihat:")
 
 st.divider()
 
 if st.button("Mulai Identifikasi Part Number", type="primary"):
     if not image_file:
         st.error("⚠️ Silakan upload atau ambil foto tool terlebih dahulu.")
+    elif not api_key:
+        st.error("⚠️ API Key tidak ditemukan. Pastikan 'GEMINI_API_KEY' sudah diset di Streamlit Secrets.")
     else:
-        with st.spinner("AI sedang menganalisis gambar, OCR, dan melakukan cross-checking dengan katalog resmi..."):
-            
-            # 1. Kompilasi data dari user
+        with st.spinner("AI sedang menganalisis gambar, melakukan OCR, dan mencocokkan data..."):
+            analyzer = ToolAnalyzer(api_key=api_key)
             user_specs = f"Type: {tool_type}, Size: {size_info}, Notes: {additional_desc}"
             
-            # 2. (Simulasi) Pencarian Web berdasarkan brand
-            # Pada implementasi nyata, jalankan Google Custom Search API di sini
-            mock_web_search = f"Simulasi hasil web scraping untuk {selected_brand} {tool_type} {size_info}..."
+            # Memformat query berdasarkan brand jika terdaftar
+            brand_handler = BRAND_REGISTRY.get(selected_brand)
+            web_context = ""
+            if brand_handler:
+                web_context = f"Website Resmi: {brand_handler.official_website}"
             
-            # 3. Analisis AI
-            result = analyzer.analyze_tool(
+            # Jalankan Analisis
+            result_text = analyzer.analyze_tool(
                 image=img,
                 brand=selected_brand,
                 user_specs=user_specs,
-                web_search_results=mock_web_search
+                web_context=web_context
             )
             
-            # 4. Tampilkan Hasil (Workflow Verifikasi Manusia)
             st.success("Analisis Selesai!")
-            
-            st.subheader("📋 Hasil Identifikasi")
-            
-            # Placeholder tampilan hasil (Asumsikan result adalah dict)
-            # Pada kode nyata, result akan berupa objek JSON yang sudah di-parse
-            st.markdown(f"**Raw AI Response:**\n{result}")
-            
-            # UI Mockup untuk Hasil Terstruktur
-            st.metric(label="Estimated Part Number", value="T72 (Contoh)")
-            st.progress(85, text="Confidence Score: 85% (High)")
-            
-            st.markdown("### 🔍 Dasar Pemikiran (Evidence Reasoning)")
-            st.write("1. **OCR:** Mendeteksi ukiran '72' dan 'USA' pada gagang.")
-            st.write("2. **Visual:** Bentuk kepala ratchet sesuai dengan mekanisme Dual 80 Technology.")
-            st.write("3. **Cross-check:** Website resmi Snap-on mengonfirmasi T72 adalah 1/4\" Drive Dual 80 Technology Standard Ratchet.")
-            
-            st.markdown("### 🌐 Sumber (Source Citation)")
-            st.write("[Snap-on Official Catalog - T72](https://shop.snapon.com)")
-            
-            st.warning("⚠️ **Human Verification Required:** AI mengidentifikasi korosi pada bagian drive, pastikan membandingkan panjang gagang secara manual.")
+            st.markdown("### 📋 Hasil Identifikasi Part Number")
+            st.markdown(result_text)
